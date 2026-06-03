@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background-color: #08090d;
+    color: #e8e9f0;
+    font-family: 'DM Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #1e2030; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #2a2d42; }
+}
+
+@layer components {
+  /* Cards */
+  .card {
+    @apply bg-surface border border-border rounded-2xl p-6 mb-5;
+  }
+  .card-title {
+    @apply font-syne font-bold text-base text-text1 mb-4 flex items-center gap-2;
+  }
+
+  /* Inputs */
+  .input {
+    @apply w-full bg-surface2 border border-border rounded-lg px-3 py-2.5
+           text-text1 text-sm outline-none transition-all duration-200
+           placeholder:text-text3 focus:border-accent focus:ring-2 focus:ring-accent/10;
+  }
+  .label {
+    @apply block text-xs font-medium text-text2 mb-1.5 tracking-wide;
+  }
+  .input-group { @apply mb-4; }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+           transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed
+           border-none outline-none;
+  }
+  .btn-primary {
+    @apply bg-gradient-to-r from-accent to-purple-500 text-white shadow-lg shadow-accent/25
+           hover:-translate-y-0.5 hover:shadow-accent/40 active:translate-y-0;
+  }
+  .btn-secondary {
+    @apply bg-surface2 border border-border text-text1
+           hover:border-accent/50 hover:text-accent;
+  }
+  .btn-ghost {
+    @apply text-text2 hover:text-text1 hover:bg-surface2;
+  }
+  .btn-danger {
+    @apply bg-accent2/10 border border-accent2/30 text-accent2 hover:bg-accent2/20;
+  }
+
+  /* Result box */
+  .result-box {
+    @apply bg-surface2 border border-border rounded-xl p-5 mt-4
+           text-sm leading-relaxed text-text1 whitespace-pre-wrap
+           max-h-[480px] overflow-y-auto animate-fade-in;
+  }
+
+  /* Loader dots */
+  .loader-dot {
+    @apply w-1.5 h-1.5 rounded-full bg-accent;
+    animation: bounce 1.2s ease-in-out infinite;
+  }
+  .loader-dot:nth-child(2) { animation-delay: 0.15s; }
+  .loader-dot:nth-child(3) { animation-delay: 0.30s; }
+
+  /* Nav item */
+  .nav-item {
+    @apply flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer
+           transition-all duration-200 text-sm text-text2 border border-transparent;
+  }
+  .nav-item:hover { @apply bg-accent/5 text-text1; }
+  .nav-item.active {
+    @apply bg-accent/10 text-accent border-accent/20;
+  }
+
+  /* Tags / chips */
+  .tag {
+    @apply px-3 py-1 rounded-full text-xs font-medium border cursor-pointer
+           transition-all duration-200 hover:-translate-y-0.5;
+  }
+  .tag-purple { @apply bg-accent/10 border-accent/30 text-accent; }
+  .tag-green  { @apply bg-accent3/10 border-accent3/30 text-accent3; }
+  .tag-red    { @apply bg-accent2/10 border-accent2/30 text-accent2; }
+  .tag-yellow { @apply bg-accent4/10 border-accent4/30 text-accent4; }
+
+  /* Platform badges */
+  .badge-ig { @apply bg-pink-500/15 text-pink-400 px-2 py-0.5 rounded-full text-xs font-semibold; }
+  .badge-yt { @apply bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full text-xs font-semibold; }
+  .badge-li { @apply bg-blue-500/15 text-blue-400 px-2 py-0.5 rounded-full text-xs font-semibold; }
+  .badge-tw { @apply bg-sky-500/15 text-sky-400 px-2 py-0.5 rounded-full text-xs font-semibold; }
+}
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40%           { transform: scale(1);   opacity: 1;   }
+}
+
+/* Ambient bg glow */
+body::before {
+  content: '';
+  position: fixed;
+  top: -200px; left: -200px;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(108,99,255,0.07) 0%, transparent 70%);
+  pointer-events: none;
+  animation: driftA 18s ease-in-out infinite alternate;
+  z-index: 0;
+}
+body::after {
+  content: '';
+  position: fixed;
+  bottom: -200px; right: -100px;
+  width: 500px; height: 500px;
+  background: radial-gradient(circle, rgba(0,217,160,0.05) 0%, transparent 70%);
+  pointer-events: none;
+  animation: driftB 22s ease-in-out infinite alternate;
+  z-index: 0;
+}
+@keyframes driftA { from { transform: translate(0,0); } to { transform: translate(80px,60px); } }
+@keyframes driftB { from { transform: translate(0,0); } to { transform: translate(-60px,-80px); } }
