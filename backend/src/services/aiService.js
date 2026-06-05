@@ -1,66 +1,155 @@
+// ============================================================
+// SocialPulse AI — Multi-AI Service
+// Supports: Claude (Anthropic) | ChatGPT (OpenAI) | Gemini (Google)
+// ============================================================
 const Anthropic = require('@anthropic-ai/sdk');
+const OpenAI    = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { query } = require('../config/database');
-const logger = require('../config/logger');
+const logger    = require('../config/logger');
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
+// ---- Clients ----
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const openai    = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const genai     = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const MODEL = 'claude-sonnet-4-20250514';
+// ---- Model IDs ----
+const MODELS = {
+  claude:  'claude-sonnet-4-20250514',
+  chatgpt: 'gpt-4o',
+  gemini:  'gemini-1.5-pro',
+};
+
 const MAX_TOKENS = 2000;
 
-/**
- * Call Claude API — standard completion
- */
-async function callClaude({ systemPrompt, userMessage, userId, action, useWebSearch = false }) {
+// ============================================================
+// MAIN ROUTER — picks AI based on `provider` param
+// ============================================================
+async function callAI({ provider = 'claude', systemPrompt, userMessage, userId, action, useWebSearch = false }) {
+  let result, tokensUsed;
+
+  switch (provider) {
+    case 'chatgpt':
+      ({ result, tokensUsed } = await callChatGPT({ systemPrompt, userMessage }));
+      break;
+    case 'gemini':
+      ({ result, tokensUsed } = await callGemini({ systemPrompt, userMessage }));
+      break;
+    case 'claude':
+    default:
+      ({ result, tokensUsed } = await callClaude({ systemPrompt, userMessage, useWebSearch }));
+  }
+
+  if (userId) await logUsage(userId, action, tokensUsed, provider);
+  return { success: true, result, tokensUsed, provider };
+}
+
+// ============================================================
+// CLAUDE (Anthropic)
+// ============================================================
+async function callClaude({ systemPrompt, userMessage, useWebSearch = false }) {
   try {
-    const messageConfig = {
-      model: MODEL,
+    const cfg = {
+      model:      MODELS.claude,
       max_tokens: MAX_TOKENS,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }]
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userMessage }],
     };
+    if (useWebSearch) cfg.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
 
-    if (useWebSearch) {
-      messageConfig.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
-    }
-
-    const response = await anthropic.messages.create(messageConfig);
-
-    // Extract text from response (handles tool_use blocks too)
+    const response = await anthropic.messages.create(cfg);
     const text = response.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
       .join('\n');
-
-    const tokensUsed = response.usage?.input_tokens + response.usage?.output_tokens || 0;
-
-    // Log usage in DB
-    if (userId) {
-      await logUsage(userId, action, tokensUsed);
-    }
-
-    return { success: true, result: text, tokensUsed };
-  } catch (error) {
-    logger.error('Claude API error:', { message: error.message, action });
-    throw new Error(`AI generation failed: ${error.message}`);
+    const tokensUsed = (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
+    return { result: text, tokensUsed };
+  } catch (err) {
+    logger.error('Claude error:', err.message);
+    throw new Error(`Claude failed: ${err.message}`);
   }
 }
 
-/**
- * Log AI usage to database
- */
-async function logUsage(userId, action, tokensUsed) {
+// ============================================================
+// CHATGPT (OpenAI)
+// ============================================================
+async function callChatGPT({ systemPrompt, userMessage }) {
+  try {
+    const response = await openai.chat.completions.create({
+      model:      MODELS.chatgpt,
+      max_tokens: MAX_TOKENS,
+      messages: [
+        { role: 'system',  content: systemPrompt },
+        { role: 'user',    content: userMessage  },
+      ],
+    });
+    const text      = response.choices[0]?.message?.content || '';
+    const tokensUsed = (response.usage?.total_tokens || 0);
+    return { result: text, tokensUsed };
+  } catch (err) {
+    logger.error('ChatGPT error:', err.message);
+    throw new Error(`ChatGPT failed: ${err.message}`);
+  }
+}
+
+// ============================================================
+// GEMINI (Google)
+// ============================================================
+async function callGemini({ systemPrompt, userMessage }) {
+  try {
+    const model = genai.getGenerativeModel({
+      model: MODELS.gemini,
+      systemInstruction: systemPrompt,
+    });
+    const chat   = model.startChat({ history: [] });
+    const result = await chat.sendMessage(userMessage);
+    const text   = result.response.text();
+    // Gemini doesn't always return token counts in free tier
+    const tokensUsed = result.response?.usageMetadata?.totalTokenCount || 0;
+    return { result: text, tokensUsed };
+  } catch (err) {
+    logger.error('Gemini error:', err.message);
+    throw new Error(`Gemini failed: ${err.message}`);
+  }
+}
+
+// ============================================================
+// COMPARE — call all 3 AIs in parallel and return combined
+// ============================================================
+async function callAllAIs({ systemPrompt, userMessage, userId, action }) {
+  const [claude, gpt, gemini] = await Promise.allSettled([
+    callClaude({ systemPrompt, userMessage }),
+    callChatGPT({ systemPrompt, userMessage }),
+    callGemini({ systemPrompt, userMessage }),
+  ]);
+
+  const results = {
+    claude:  claude.status  === 'fulfilled' ? claude.value.result  : `Claude Error: ${claude.reason?.message}`,
+    chatgpt: gpt.status     === 'fulfilled' ? gpt.value.result     : `ChatGPT Error: ${gpt.reason?.message}`,
+    gemini:  gemini.status  === 'fulfilled' ? gemini.value.result  : `Gemini Error: ${gemini.reason?.message}`,
+  };
+
+  const totalTokens =
+    (claude.value?.tokensUsed  || 0) +
+    (gpt.value?.tokensUsed     || 0) +
+    (gemini.value?.tokensUsed  || 0);
+
+  if (userId) await logUsage(userId, action, totalTokens, 'all');
+
+  return { success: true, results, tokensUsed: totalTokens };
+}
+
+// ============================================================
+// USAGE LOGGING
+// ============================================================
+async function logUsage(userId, action, tokensUsed, provider = 'claude') {
   try {
     await query(
       'INSERT INTO ai_usage_log (user_id, action, tokens_used) VALUES ($1, $2, $3)',
-      [userId, action, tokensUsed]
+      [userId, `${action}_${provider}`, tokensUsed]
     );
-
-    // Deduct from free credits if on free plan
     await query(
-      `UPDATE users 
-       SET ai_credits = GREATEST(ai_credits - 1, 0)
+      `UPDATE users SET ai_credits = GREATEST(ai_credits - 1, 0)
        WHERE id = $1 AND plan = 'free'`,
       [userId]
     );
@@ -69,163 +158,83 @@ async function logUsage(userId, action, tokensUsed) {
   }
 }
 
-/**
- * Get usage stats for a user
- */
 async function getUserUsageStats(userId) {
   const result = await query(
-    `SELECT 
+    `SELECT
        COUNT(*) as total_generations,
        SUM(tokens_used) as total_tokens,
        COUNT(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 END) as today_count,
-       COUNT(CASE WHEN created_at > NOW() - INTERVAL '7 days' THEN 1 END) as week_count
-     FROM ai_usage_log
-     WHERE user_id = $1`,
+       COUNT(CASE WHEN created_at > NOW() - INTERVAL '7 days'  THEN 1 END) as week_count
+     FROM ai_usage_log WHERE user_id = $1`,
     [userId]
   );
   return result.rows[0];
 }
 
 // ============================================================
-// PROMPT TEMPLATES
+// PROMPT TEMPLATES (shared across all 3 AIs)
 // ============================================================
-
 const PROMPTS = {
   detectCompetitors: ({ bizName, industry, location, size }) =>
     `You are an expert social media competitive intelligence analyst.
-
-Business: "${bizName}"
-Industry: "${industry}"
-Market: "${location || 'India / Global'}"
-Size: "${size || 'Not specified'}"
-
-Identify TOP 10 DIRECT social media competitors and TOP 5 INDIRECT ones.
-
-Format your response clearly with sections:
-1. DIRECT COMPETITORS (numbered list with: name, platforms, why they compete, estimated follower range, content style)
-2. INDIRECT COMPETITORS (same format)
-3. ASPIRATION BRANDS TO STUDY (3 brands dominating social in this space)
-4. YOUR WINNING DIFFERENTIATOR (3 specific angles to stand out)
-
-Be specific to the ${location || 'Indian'} market where relevant. Use real brand names.`,
+Business: "${bizName}" | Industry: "${industry}" | Market: "${location || 'India / Global'}" | Size: "${size || 'Not specified'}"
+Identify TOP 10 DIRECT and TOP 5 INDIRECT social media competitors.
+Format: 1. DIRECT COMPETITORS (name, platforms, why they compete, follower range, content style)
+2. INDIRECT COMPETITORS (same) 3. ASPIRATION BRANDS TO STUDY (3 brands) 4. YOUR WINNING DIFFERENTIATOR (3 angles)
+Be specific to ${location || 'Indian'} market. Use real brand names.`,
 
   analyzeCompetitor: ({ handle, platform, focus }) =>
-    `Perform a detailed social media competitor analysis for: "${handle}" on ${platform}.
-Focus: ${focus}
-
-Provide:
-📊 PROFILE OVERVIEW (followers estimate, posting frequency, engagement rate)
-🎯 CONTENT STRATEGY (pillars, formats, hook styles, caption approach)
-💪 STRENGTHS (what they do brilliantly)
-⚠️ WEAKNESSES & GAPS (opportunities for YOU)
-🗓️ POSTING PATTERN (best days/times they post)
-⚡ TOP 5 ACTIONABLE TAKEAWAYS
-
+    `Perform a detailed social media competitor analysis for: "${handle}" on ${platform}. Focus: ${focus}
+Provide: 📊 PROFILE OVERVIEW | 🎯 CONTENT STRATEGY | 💪 STRENGTHS | ⚠️ WEAKNESSES & GAPS | 🗓️ POSTING PATTERN | ⚡ TOP 5 ACTIONABLE TAKEAWAYS
 Be specific and strategic.`,
 
   contentGaps: ({ input }) =>
     `Perform a Content Gap Analysis for: "${input}"
-
-Identify:
-1. 10 TOPIC GAPS (topics competitors haven't covered well, with content angle)
-2. FORMAT GAPS (underused content formats)  
-3. AUDIENCE GAPS (underserved segments)
-4. PLATFORM GAPS (low competition platforms)
-5. TOP 5 IMMEDIATE OPPORTUNITIES (ranked by impact, with specific content idea)
-
+Identify: 1. 10 TOPIC GAPS | 2. FORMAT GAPS | 3. AUDIENCE GAPS | 4. PLATFORM GAPS | 5. TOP 5 IMMEDIATE OPPORTUNITIES
 Be very specific and actionable.`,
 
   reelIdeas: ({ niche, goal, tone, count = 10 }) =>
-    `Generate ${count} high-performing Instagram Reel ideas for:
-Niche: "${niche}"
-Goal: "${goal}"
-Style: "${tone}"
-
-For each idea include:
-🎬 Title | 💡 Concept (2 sentences) | ⚡ Hook (exact first line) | 📐 Format | ⏱️ Length | 🎵 Audio style | 📝 Caption starter | 🏷️ 5 hashtags | 💪 Why it will perform
-
-End with: Best posting time for this niche.`,
+    `Generate ${count} high-performing Instagram Reel ideas for Niche: "${niche}", Goal: "${goal}", Style: "${tone}"
+For each: 🎬 Title | 💡 Concept | ⚡ Hook (exact first line) | 📐 Format | ⏱️ Length | 🎵 Audio | 📝 Caption starter | 🏷️ 5 hashtags | 💪 Why it performs
+End with: Best posting time.`,
 
   postIdeas: ({ topic, platform, type, base }) =>
-    `Generate 8 unique ${type} post ideas for ${platform}:
-Topic: "${topic}"
-Based on: ${base}
-
-For each: Concept | Hook | Content outline | CTA | Expected metric (saves/shares/comments) | 10 hashtags
-
-Include a 70-20-10 mix: Educational / Entertaining / Promotional.
-End with 3 best posting times for ${platform}.`,
+    `Generate 8 unique ${type} post ideas for ${platform}. Topic: "${topic}". Based on: ${base}
+For each: Concept | Hook | Outline | CTA | Expected metric | 10 hashtags. Include 70-20-10 mix. End with 3 best posting times.`,
 
   hooks: ({ topic, style, platform }) =>
-    `Generate 5 powerful ${style} hooks for:
-Topic: "${topic}"
-Platform: ${platform}
-
-For each hook: The hook line | Why it works | Which audience it targets | Engagement type driven
-
-Finish with: A/B test recommendation — which 2 to test first.`,
+    `Generate 5 powerful ${style} hooks for Topic: "${topic}", Platform: ${platform}
+For each: Hook line | Why it works | Target audience | Engagement type. Finish with A/B test recommendation.`,
 
   fullContent: ({ type, topic, audience, context, tone, language }) =>
     `Create a complete "${type}" for:
-Topic: "${topic}"
-Audience: "${audience || 'general social media audience'}"
-Tone: ${tone}
-Language: ${language}
+Topic: "${topic}" | Audience: "${audience || 'general social media audience'}" | Tone: ${tone} | Language: ${language}
 Context: "${context || 'None'}"
-
-Deliver the FULL ready-to-use content with:
-- Complete script/caption/calendar
-- Visual/staging directions where relevant
-- Hashtag sets
-- Posting time recommendation
-- Performance prediction
-
-${language === 'Hinglish (Hindi + English)' ? 'Write in natural Hinglish — Hindi for emotion/explanation, English for technical terms.' : ''}`,
+Deliver FULL ready-to-use content: complete script/caption/calendar, visual directions, hashtags, posting time, performance prediction.
+${language === 'Hinglish (Hindi + English)' ? 'Write in natural Hinglish — Hindi for emotion, English for technical terms.' : ''}`,
 
   trends: ({ niche, platform, trendType }) =>
-    `Fetch and analyze the LATEST social media trends for ${niche ? `the "${niche}" niche` : 'all niches'} on ${platform} (current date: June 2026).
-Focus: ${trendType}
-
-Provide:
-📈 TOP 10 TRENDING ${trendType.toUpperCase()} (name, why trending, engagement potential, how to use, difficulty)
-🔥 HOT RIGHT NOW this week (5 must-use trends)
-🔮 COMING TRENDS next 2-4 weeks
-⚡ 5 IMMEDIATE CONTENT IDEAS based on these trends
-📊 PLATFORM ALGORITHM FAVORITES right now
-
-Be specific with real trend names.`,
+    `Fetch and analyze LATEST social media trends for ${niche ? `"${niche}" niche` : 'all niches'} on ${platform} (June 2026). Focus: ${trendType}
+Provide: 📈 TOP 10 TRENDING | 🔥 HOT RIGHT NOW (5 trends) | 🔮 COMING TRENDS (2-4 weeks) | ⚡ 5 CONTENT IDEAS | 📊 ALGORITHM FAVORITES`,
 
   news: ({ platform, topic, newsType }) =>
-    `Report the most important recent social media news for ${platform || 'all platforms'}${topic ? `, focused on "${topic}"` : ''}.
-Type: ${newsType}
-
-Format as 8 news items. Each item:
-📌 HEADLINE | 📅 When | 📝 Summary (2-3 sentences) | 💡 Impact for creators/brands | ⚡ Action required
-
-Cover: Algorithm updates, new features, creator economy news, advertising changes, platform policies.
-Date: June 2026. Be accurate and current.`,
+    `Report most important recent social media news for ${platform || 'all platforms'}${topic ? `, focused on "${topic}"` : ''}. Type: ${newsType}
+Format as 8 news items. Each: 📌 HEADLINE | 📅 When | 📝 Summary | 💡 Impact for creators | ⚡ Action required. Date: June 2026.`,
 
   engagement: ({ bizType, goal, engType }) => {
-    if (engType === 'customer') {
+    if (engType === 'customer')
       return `Generate 10 customer engagement strategies for "${bizType}" focused on "${goal}".
-For each: Strategy name | Description | Psychology behind it | Implementation steps | Template/example | Time to implement`;
-    }
-    if (engType === 'employee') {
-      return `Create a complete Employee Advocacy Social Media Program for "${bizType}".
-Include: Monthly content themes | 10 post ideas for employees | Incentivization strategy | 5 caption templates | Brand guidelines`;
-    }
+Each: Strategy name | Description | Psychology | Steps | Template | Time to implement`;
+    if (engType === 'employee')
+      return `Create an Employee Advocacy Social Media Program for "${bizType}".
+Include: Monthly themes | 10 post ideas | Incentives | 5 caption templates | Brand guidelines`;
     return `Create a UGC Campaign for "${bizType}".
-Include: Campaign concept + hashtag | 5 UGC trigger tactics | Customer brief | Selection process | 5 request captions | KPIs to track`;
+Include: Campaign concept + hashtag | 5 trigger tactics | Customer brief | Selection process | 5 request captions | KPIs`;
   },
 
   reply: ({ comment, commentType, tone }) =>
-    `Generate 3 reply variations to this ${commentType} comment:
-"${comment}"
-Tone: ${tone}
-
-For each: Ready-to-use reply | Why it works
-Requirements: Concise, human, on-brand, include emoji where natural.
-Bonus: One reply that generates even MORE engagement.`
+    `Generate 3 reply variations to this ${commentType} comment: "${comment}". Tone: ${tone}
+For each: Ready-to-use reply | Why it works. Bonus: One reply that generates MORE engagement.`,
 };
 
-module.exports = { callClaude, getUserUsageStats, PROMPTS };
+module.exports = { callAI, callAllAIs, getUserUsageStats, PROMPTS, MODELS };
